@@ -17,20 +17,37 @@ from typing import Any
 from rai_toolkit.scorers.base import BaseScorer, ScorerResult
 
 
+_INFLECTIONS = r"(?:s|es|ed|d|ing|ings|(?:[bdglmnprt])(?:ed|ing))"
+"""Endings that keep a harmful keyword harmful: "kills", "murdered", "stabbing"."""
+
+
 def _keyword_pattern(keyword: str) -> re.Pattern[str]:
-    """Compile ``keyword`` so that it only matches outside a Latin word.
+    """Compile ``keyword`` so that it matches the word and its inflections only.
 
-    A bare substring test flags unrelated words that happen to contain a keyword:
-    "skills" contains "kill", "stability" contains "stab", "offshoot" contains
-    "shoot", and "oxymoron" contains "moron". This scorer is part of the default
-    output guardrail, so those false positives reject innocent responses.
+    A bare substring test flags unrelated words that contain a keyword: "skills"
+    contains "kill", "stability" contains "stab", "offshoot" contains "shoot", and
+    "oxymoron" contains "moron". This scorer is part of the default output
+    guardrail, so those false positives reject innocent responses.
 
-    ``\\b`` is not the right boundary here: it treats a keyword written in a
-    script such as Chinese as word characters on both sides, so a pattern built
-    from it would never match those keywords at all. Only Latin letters are
-    excluded instead.
+    A word boundary on both sides would swing too far the other way, though: it
+    would stop matching the inflections that carry the meaning, and "You should be
+    murdered" would pass the same guardrail. So the keyword has to *start* a word,
+    and may only be followed by an inflection or by the end of the word:
+    "kills"/"killed"/"killing" match, "skills" does not (a letter precedes the
+    keyword) and "stability" does not (its tail is not an inflection).
+
+    ``\\b`` cannot express the left side: it treats a keyword written in a script
+    such as Chinese as word characters on both sides, so a pattern built from it
+    would never match those keywords at all. Only Latin letters are excluded.
     """
-    return re.compile(rf"(?<![A-Za-z]){re.escape(keyword)}(?![A-Za-z])", re.IGNORECASE)
+    alternatives = rf"{re.escape(keyword)}{_INFLECTIONS}?"
+
+    if keyword.endswith("e") and len(keyword) > 3:
+        # "hate" drops its e before -ing. The trimmed stem is only accepted with a
+        # suffix, so "hat" on its own stays a word about headwear.
+        alternatives += rf"|{re.escape(keyword[:-1])}(?:ing|es|ed)"
+
+    return re.compile(rf"(?<![A-Za-z])(?:{alternatives})(?![A-Za-z])", re.IGNORECASE)
 
 
 class RegexPIIScorer(BaseScorer):

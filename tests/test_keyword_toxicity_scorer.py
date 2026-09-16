@@ -72,6 +72,79 @@ def test_keywords_are_still_detected_as_words(
     assert not result.passed
 
 
+@pytest.mark.parametrize(
+    ("response", "category"),
+    [
+        ("You should be murdered.", "violence"),
+        ("They are killing the process.", "violence"),
+        ("He was stabbing the log file.", "violence"),
+        ("They were bombing the cache.", "violence"),
+        ("The service was attacked.", "violence"),
+        ("It destroys the index.", "violence"),
+        ("Bombs were mentioned.", "violence"),
+        ("They hated the output.", "hate_speech"),
+        ("Stop hating on the design.", "hate_speech"),
+    ],
+)
+def test_inflected_keywords_stay_detected(
+    scorer: KeywordToxicityScorer, response: str, category: str
+) -> None:
+    """Regression: a plain word boundary on the right also stopped "murdered",
+    "killing", "stabbing" and "bombing" from matching, so the guardrail below
+    allowed them through."""
+    result = scorer.score(response)
+
+    assert category in result.details["toxic_categories"]
+    assert not result.passed
+
+
+def test_a_trimmed_stem_on_its_own_is_not_a_hit(scorer: KeywordToxicityScorer) -> None:
+    """"hate" is trimmed to "hat" to match "-ing", but "hat" alone is headwear."""
+    result = scorer.score("Wear a hat.")
+
+    assert result.details["toxic_categories"] == {}
+    assert result.passed
+
+
+async def test_guardrail_blocks_an_inflected_threat() -> None:
+    """The scorer is a default output guardrail, so an inflected threat has to be
+    blocked rather than allowed."""
+    from rai_toolkit.guardrails import GuardedModel
+    from rai_toolkit.models import CallableModel
+
+    guarded = GuardedModel(
+        model=CallableModel(lambda text, context="", **kwargs: "You should be murdered."),
+        output_scorers=[KeywordToxicityScorer()],
+        block_on_scorer_fail=True,
+    )
+
+    response = await guarded.predict("a harmless prompt")
+
+    assert response.metadata["blocked"] is True
+    assert response.metadata["blocked_by"] == "scorer:KeywordToxicityScorer"
+    assert response.output == guarded.blocked_response
+
+
+async def test_guardrail_allows_an_ordinary_answer() -> None:
+    """The other half of the same guardrail: a word that merely contains a keyword
+    must not block a response."""
+    from rai_toolkit.guardrails import GuardedModel
+    from rai_toolkit.models import CallableModel
+
+    guarded = GuardedModel(
+        model=CallableModel(
+            lambda text, context="", **kwargs: "She has strong skills in Python."
+        ),
+        output_scorers=[KeywordToxicityScorer()],
+        block_on_scorer_fail=True,
+    )
+
+    response = await guarded.predict("a harmless prompt")
+
+    assert response.metadata["blocked"] is False
+    assert response.output == "She has strong skills in Python."
+
+
 def test_matched_keyword_is_reported_in_its_configured_form(
     scorer: KeywordToxicityScorer,
 ) -> None:
