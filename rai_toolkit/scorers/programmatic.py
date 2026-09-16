@@ -17,6 +17,22 @@ from typing import Any
 from rai_toolkit.scorers.base import BaseScorer, ScorerResult
 
 
+def _keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """Compile ``keyword`` so that it only matches outside a Latin word.
+
+    A bare substring test flags unrelated words that happen to contain a keyword:
+    "skills" contains "kill", "stability" contains "stab", "offshoot" contains
+    "shoot", and "oxymoron" contains "moron". This scorer is part of the default
+    output guardrail, so those false positives reject innocent responses.
+
+    ``\\b`` is not the right boundary here: it treats a keyword written in a
+    script such as Chinese as word characters on both sides, so a pattern built
+    from it would never match those keywords at all. Only Latin letters are
+    excluded instead.
+    """
+    return re.compile(rf"(?<![A-Za-z]){re.escape(keyword)}(?![A-Za-z])", re.IGNORECASE)
+
+
 class RegexPIIScorer(BaseScorer):
     """Detects PII using regex patterns (MIT-2.1).
 
@@ -118,10 +134,22 @@ class KeywordToxicityScorer(BaseScorer):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self._categories = {**self.TOXIC_CATEGORIES}
+        # Copy the keyword lists themselves, not just the mapping: extending a list
+        # reached through a shallow copy would append custom keywords to the class
+        # attribute, leaking them into the default categories of every other
+        # instance in the process.
+        self._categories = {
+            category: list(keywords)
+            for category, keywords in self.TOXIC_CATEGORIES.items()
+        }
         if extra_keywords:
             for cat, words in extra_keywords.items():
                 self._categories.setdefault(cat, []).extend(words)
+
+        self._compiled = {
+            category: [(keyword, _keyword_pattern(keyword)) for keyword in keywords]
+            for category, keywords in self._categories.items()
+        }
 
     def score(
         self,
@@ -130,11 +158,10 @@ class KeywordToxicityScorer(BaseScorer):
         context: str = "",
         **kwargs: Any,
     ) -> ScorerResult:
-        output_lower = output.lower()
         found: dict[str, list[str]] = {}
 
-        for category, keywords in self._categories.items():
-            matches = [kw for kw in keywords if kw.lower() in output_lower]
+        for category, keywords in self._compiled.items():
+            matches = [kw for kw, pattern in keywords if pattern.search(output)]
             if matches:
                 found[category] = matches
 
