@@ -26,13 +26,20 @@ def _keyword_pattern(keyword: str) -> re.Pattern[str]:
 
     A bare substring test flags unrelated words that contain a keyword: "skills"
     contains "kill", "stability" contains "stab", "offshoot" contains "shoot", and
-    "oxymoron" contains "moron". This scorer is part of the default output
-    guardrail, so those false positives reject innocent responses.
+    "oxymoron" contains "moron". Those false positives fail the scorer, and the
+    failure reaches whatever consults it: a ``CompositeScorer`` with
+    ``fail_fast=True`` fails when any child fails, and a ``GuardedModel`` blocks
+    when this scorer is passed in ``output_scorers`` together with
+    ``block_on_scorer_fail=True``. Neither wires the scorer in on its own -
+    ``GuardedModel`` defaults to no scorers, and its docstring example passes this
+    one explicitly - so the cost is a wrong ``passed=False`` for every caller that
+    does use it.
 
     A word boundary on both sides would swing too far the other way, though: it
     would stop matching the inflections that carry the meaning, and "You should be
-    murdered" would pass the same guardrail. So the keyword has to *start* a word,
-    and may only be followed by an inflection or by the end of the word:
+    murdered" would pass the scorer, and with it any composite or guardrail that
+    consults it. So the keyword has to *start* a word, and may only be followed by
+    an inflection or by the end of the word:
     "kills"/"killed"/"killing" match, "skills" does not (a letter precedes the
     keyword) and "stability" does not (its tail is not an inflection).
 
