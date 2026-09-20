@@ -294,11 +294,21 @@ class OutputFormatScorer(BaseScorer):
         elif self.expected_format == "xml":
             return self._check_xml(output)
         else:
+            # An unsupported expected_format cannot be evaluated, so reporting a
+            # pass here would hide a configuration mistake - a typo such as
+            # expected_format="JSON" - behind a full score for any output. The
+            # result contract asks for an un-assessed row instead: it is excluded
+            # from aggregates and surfaces the gap rather than inflating it.
             return ScorerResult(
-                score=1.0,
-                passed=True,
+                score=0.0,
+                passed=False,
                 category=self.category,
-                explanation=f"Unknown format '{self.expected_format}', skipping check",
+                explanation=(
+                    f"Unassessed: unsupported expected_format "
+                    f"'{self.expected_format}'."
+                ),
+                details={"scorer_name": self.name, "skipped": "unsupported_format"},
+                assessed=False,
             )
 
     def _check_json(self, output: str) -> ScorerResult:
