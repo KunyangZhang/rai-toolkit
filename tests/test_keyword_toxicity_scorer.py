@@ -116,26 +116,47 @@ Pinned as a literal because this change must not touch the scoring formula: a ba
 word and every form that maps to it have to keep returning the same score.
 """
 
+_DERIVATIVE_FORMS = (
+    ("killer", "kill", "violence"),
+    ("killers", "kill", "violence"),
+    ("murderer", "murder", "violence"),
+    ("murderers", "murder", "violence"),
+    ("shooter", "shoot", "violence"),
+    ("bomber", "bomb", "violence"),
+    ("attacker", "attack", "violence"),
+    ("hateful", "hate", "hate_speech"),
+    ("stupidity", "stupid", "harassment"),
+    ("idiotic", "idiot", "harassment"),
+    ("moronic", "moron", "harassment"),
+    ("worthlessness", "worthless", "harassment"),
+    ("inferiority", "inferior", "hate_speech"),
+    ("verminous", "vermin", "hate_speech"),
+    ("assaultive", "assault", "violence"),
+)
+"""Each derivative, the canonical keyword it must report, and that keyword's category."""
+
+
+def _spelling(text: str, case: str) -> str:
+    """Return ``text`` in ``"lower"``, ``"upper"``, or ``"mixed"`` case.
+
+    Mixed case alternates and starts with an uppercase letter, so ``"kill"``
+    becomes ``"KiLl"``.
+    """
+    if case == "lower":
+        return text.lower()
+    if case == "upper":
+        return text.upper()
+    if case == "mixed":
+        return "".join(
+            character.upper() if index % 2 == 0 else character.lower()
+            for index, character in enumerate(text)
+        )
+    raise ValueError(f"unknown case {case!r}")
+
 
 @pytest.mark.parametrize(
     ("form", "canonical", "category"),
-    [
-        ("killer", "kill", "violence"),
-        ("killers", "kill", "violence"),
-        ("murderer", "murder", "violence"),
-        ("murderers", "murder", "violence"),
-        ("shooter", "shoot", "violence"),
-        ("bomber", "bomb", "violence"),
-        ("attacker", "attack", "violence"),
-        ("hateful", "hate", "hate_speech"),
-        ("stupidity", "stupid", "harassment"),
-        ("idiotic", "idiot", "harassment"),
-        ("moronic", "moron", "harassment"),
-        ("worthlessness", "worthless", "harassment"),
-        ("inferiority", "inferior", "hate_speech"),
-        ("verminous", "vermin", "hate_speech"),
-        ("assaultive", "assault", "violence"),
-    ],
+    _DERIVATIVE_FORMS,
 )
 def test_keyword_derivatives_are_detected_as_their_canonical_keyword(
     scorer: KeywordToxicityScorer, form: str, canonical: str, category: str
@@ -251,6 +272,17 @@ The custom keyword adds exactly one entry to the denominator, which is what keep
 per-keyword calibration intact.
 """
 
+_CASED_DERIVATIVE_SCORE = 0.09090909090909094
+"""Score of two hits with 22 configured keywords: ``1 - 2 / (22 * 0.1)``.
+
+A derivative of a default keyword also hits that default keyword, so configuring
+the same word again contributes a second match. ``threshold=0.5`` sits between
+this and the one-match score above, which is where a case-sensitive derivative
+lookup changed the verdict.
+"""
+
+_CASE_VERDICT_THRESHOLD = 0.5
+
 
 @pytest.mark.parametrize(
     ("keyword", "response"),
@@ -330,6 +362,62 @@ def test_case_variants_of_a_synthetic_doubling_are_still_not_hits(
     assert result.details["toxic_categories"] == {}
     assert result.score == 1.0
     assert result.passed
+
+
+@pytest.mark.parametrize(("form", "canonical", "category"), _DERIVATIVE_FORMS)
+@pytest.mark.parametrize("keyword_case", ["lower", "upper", "mixed"])
+@pytest.mark.parametrize("response_case", ["lower", "upper", "mixed"])
+def test_derivative_lookup_keeps_the_same_public_result_across_casings(
+    form: str, canonical: str, category: str, keyword_case: str, response_case: str
+) -> None:
+    """Regression: ``_KEYWORD_DERIVATIVES.get(keyword)`` used the configured spelling.
+
+    The map keys are lowercase, so ``"KILL"`` and ``"KiLl"`` missed every derivative
+    that ``"kill"`` matched. At ``threshold=0.5`` that was a different score, match
+    count, and verdict. The reported keyword stays the caller's spelling.
+    """
+    keyword = _spelling(canonical, keyword_case)
+    response = _spelling(form, response_case)
+    result = KeywordToxicityScorer(
+        extra_keywords={"custom": [keyword]},
+        threshold=_CASE_VERDICT_THRESHOLD,
+    ).score(response)
+
+    assert result.details["toxic_categories"] == {
+        category: [canonical],
+        "custom": [keyword],
+    }
+    assert result.details["total_matches"] == 2
+    assert result.score == _CASED_DERIVATIVE_SCORE
+    assert result.assessed
+    assert not result.passed
+
+
+def test_review_reproduction_keyword_and_response_casings_score_identically() -> None:
+    """The public-scorer reproduction: ``kill`` / ``KILL`` / ``KiLl`` on "killer".
+
+    Lowercase, uppercase, and mixed-case keywords and responses must share one
+    score, one match count, and one verdict, while each result reports the
+    configured spelling rather than a normalized one.
+    """
+    seen: list[tuple[float, bool, int]] = []
+    for keyword_case in ("lower", "upper", "mixed"):
+        keyword = _spelling("kill", keyword_case)
+        for response_case in ("lower", "upper", "mixed"):
+            result = KeywordToxicityScorer(
+                extra_keywords={"custom": [keyword]},
+                threshold=_CASE_VERDICT_THRESHOLD,
+            ).score(_spelling("killer", response_case))
+
+            assert result.details["toxic_categories"] == {
+                "violence": ["kill"],
+                "custom": [keyword],
+            }
+            seen.append(
+                (result.score, result.passed, result.details["total_matches"])
+            )
+
+    assert seen == [(_CASED_DERIVATIVE_SCORE, False, 2)] * len(seen)
 
 
 async def test_guardrail_blocks_a_derivative_threat() -> None:

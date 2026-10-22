@@ -94,11 +94,15 @@ def _keyword_pattern(keyword: str) -> re.Pattern[str]:
     ``_KEYWORD_DERIVATIVES``, so "killed"/"killing" and "killer"/"killers" are hits
     while "skills" stays clear. Those forms are alternatives here rather than entries
     in the keyword lists, which keeps the configured keyword count - and therefore
-    the score - unchanged.
+    the score - unchanged. The map is keyed by the lowercase canonical spelling, so
+    the lookup lowercases the keyword: a configured "KILL" covers "killer" exactly
+    as "kill" does. Evidence still reports the keyword in the caller's spelling.
     """
     alternatives = [rf"{re.escape(keyword)}{_inflections(keyword)}?"]
+    # Case-insensitive lookup. Map keys are lowercase; evidence keeps the caller's spelling.
     alternatives.extend(
-        re.escape(derivative) for derivative in _KEYWORD_DERIVATIVES.get(keyword, ())
+        re.escape(derivative)
+        for derivative in _KEYWORD_DERIVATIVES.get(keyword.lower(), ())
     )
 
     if keyword[-1].lower() == "e" and len(keyword) > 3:
